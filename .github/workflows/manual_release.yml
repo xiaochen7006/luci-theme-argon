@@ -122,13 +122,40 @@ jobs:
         id: compile
         run: |
           cd sdk
-          echo "make package/luci-theme-argon/{clean,compile} -j$(nproc)"
+          echo "开始编译..."
           make package/luci-theme-argon/{clean,compile} -j$(nproc)
-          mv bin/packages/x86_64/base/ ../
-          rm .config .config.old
-          cd ..
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          
+          echo "=== 检查生成的包 ==="
+          # 查找所有可能的架构目录
+          find bin/packages -type d -name "base" 2>/dev/null | head -10
+          
+          # 检查正确的架构路径 (ramips/mt7620 → mipsel_24kc)
+          if [ -d "bin/packages/mipsel_24kc/base" ]; then
+            echo "找到 mipsel_24kc 架构的包"
+            mkdir -p ../output
+            cp -r bin/packages/mipsel_24kc/base/* ../output/
+            echo "文件复制成功"
+          else
+            echo "=== 尝试查找其他架构 ==="
+            # 列出所有可能的包目录
+            find bin/packages -name "luci-theme-argon*.ipk" -type f 2>/dev/null | head -10
+            # 复制任何找到的argon包
+            mkdir -p ../output
+            find bin/packages -name "luci-theme-argon*.ipk" -exec cp {} ../output/ \; 2>/dev/null || true
+          fi
+          
+          echo "=== 输出目录内容 ==="
+          ls -la ../output/ 2>/dev/null || echo "输出目录为空"
+          
+          # 检查是否成功生成了ipk文件
+          if ls ../output/luci-theme-argon*.ipk 1> /dev/null 2>&1; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "FIRMWARE=$PWD/../output" >> $GITHUB_ENV
+          else
+            echo "编译成功但未找到ipk文件，检查路径..."
+            find . -name "*.ipk" -type f | head -10
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload Argon (master) ipks to release
         uses: softprops/action-gh-release@v1
