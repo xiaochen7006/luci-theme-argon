@@ -94,13 +94,12 @@ jobs:
         run: |
           wget ${{ env.url_sdk }}
           file_name=$(echo ${{env.url_sdk}} | awk -F/ '{print $NF}')
-          # 注意：ramips SDK 通常是 .xz 格式，不是 .zst
-          mkdir sdk && tar -xJf $file_name -C ./sdk --strip-components=1
+          mkdir sdk && tar --zstd -xvf $file_name -C ./sdk --strip-components=1
           cd sdk  
-          echo "src-git base https://github.com/openwrt/openwrt.git;v24.10.3" > feeds.conf
-          echo "src-git-full packages https://github.com/openwrt/packages.git;v24.10.3" >> feeds.conf
-          echo "src-git-full luci https://github.com/openwrt/luci.git;v24.10.3" >> feeds.conf
-          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;v24.10.3"  >> feeds.conf
+          echo "src-git base https://github.com/openwrt/openwrt.git;main" > feeds.conf
+          echo "src-git-full packages https://github.com/openwrt/packages.git;master" >> feeds.conf
+          echo "src-git-full luci https://github.com/openwrt/luci.git;master" >> feeds.conf
+          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;master"  >> feeds.conf
           git clone -b master https://github.com/${{ github.repository }}.git package/downloads/luci-theme-argon
           ./scripts/feeds update -a
           echo "CONFIG_PACKAGE_luci-theme-argon=m" > .config
