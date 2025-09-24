@@ -3,14 +3,6 @@
 # Description: Auto compile
 #
 
-#
-# Fork and compile the latest version yourself using Github Actions
-#   1.Into the repository of your own fork
-#   2.Into the repository [Settings]
-#   3.[Code and automation - Actions] ↓ [General] → [Workflow permissions] ↓  Check the [Read and write permissions] and [Save]
-#   4.Let's take [Actions]
-#
-
 name: "Auto compile with OpenWrt SDK"
 on:
   repository_dispatch:
@@ -76,7 +68,7 @@ jobs:
         run: |
           echo "Install packages"
           sudo -E apt-get -qq update
-          sudo -E apt-get -qq install zstd build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-venv rsync unzip zlib1g-dev file wget
+          sudo -E apt-get -qq install xz-utils build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-venv rsync unzip zlib1g-dev file wget
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
 
@@ -85,7 +77,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: sdk
-          key: openwrt-sdk-24.10.3-ramips-mt7620
+          key: openwrt-sdk-24.10.3-ramips-mt7620-${{ github.run_id }}
 
       - name: Initialization environment
         if: steps.cache-sdk.outputs.cache-hit != 'true'
@@ -94,48 +86,102 @@ jobs:
         run: |
           wget ${{ env.url_sdk }}
           file_name=$(echo ${{env.url_sdk}} | awk -F/ '{print $NF}')
-          mkdir sdk && tar --zstd -xvf $file_name -C ./sdk --strip-components=1
+          # 修正：使用 xz 解压而不是 zstd
+          mkdir sdk && tar -xJf $file_name -C ./sdk --strip-components=1
           cd sdk  
-          echo "src-git base https://github.com/openwrt/openwrt.git;main" > feeds.conf
-          echo "src-git-full packages https://github.com/openwrt/packages.git;master" >> feeds.conf
-          echo "src-git-full luci https://github.com/openwrt/luci.git;master" >> feeds.conf
-          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;master"  >> feeds.conf
-          git clone -b master https://github.com/${{ github.repository }}.git package/downloads/luci-theme-argon
+          # 修正：使用对应版本的分支
+          echo "src-git base https://github.com/openwrt/openwrt.git;v24.10.3" > feeds.conf
+          echo "src-git-full packages https://github.com/openwrt/packages.git;v24.10.3" >> feeds.conf
+          echo "src-git-full luci https://github.com/openwrt/luci.git;v24.10.3" >> feeds.conf
+          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;v24.10.3"  >> feeds.conf
+          git clone -b master https://github.com/${{ github.repository }}.git package/luci-theme-argon
           ./scripts/feeds update -a
-          echo "CONFIG_PACKAGE_luci-theme-argon=m" > .config
-          ./scripts/feeds install -d n luci-theme-argon
-          make download -j8
+          ./scripts/feeds install -a
+          make defconfig
 
       - name: Configure Argon (master)
         run: |
           cd sdk
+          # 确保安装所有依赖
           ./scripts/feeds install luci-theme-argon
-          echo "CONFIG_ALL_NONSHARED=n" > .config
-          echo "CONFIG_ALL_KMODS=n" >> .config
-          echo "CONFIG_ALL=n" >> .config
-          echo "CONFIG_AUTOREMOVE=n" >> .config
-          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-          echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
+          ./scripts/feeds install luci-lib-base
+          ./scripts/feeds install luci-compat
+          # 简化配置
+          cat > .config << EOF
+CONFIG_TARGET_ramips=y
+CONFIG_TARGET_ramips_mt7620=y
+CONFIG_PACKAGE_luci-theme-argon=m
+CONFIG_PACKAGE_luci-lib-base=m
+CONFIG_PACKAGE_luci-compat=m
+CONFIG_LUCI_LANG_zh_Hans=y
+EOF
           make defconfig
 
       - name: Compile Argon (master)
         id: compile
         run: |
           cd sdk
-          echo "make package/luci-theme-argon/{clean,compile} -j$(nproc)"
-          make package/luci-theme-argon/{clean,compile} -j$(nproc)
-          # 修正为 ramips/mt7620 的包路径
-          mv bin/packages/mipsel_24kc/base/ ../
-          rm .config .config.old
-          cd ..
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "=== 开始编译 ==="
+          # 使用详细输出以便调试
+          make package/luci-theme-argon/clean V=s
+          make package/luci-theme-argon/compile V=s -j$(nproc)
+          
+          echo "=== 检查编译产物 ==="
+          find . -name "*.ipk" -type f | grep argon || echo "未找到argon ipk文件"
+          
+          # 检查正确的目录结构
+          echo "=== 目录结构 ==="
+          ls -la bin/packages/ || echo "bin/packages不存在"
+          find bin/packages/ -type d -name "mipsel_24kc" | head -5
+          
+          # 移动编译产物
+          if [ -d "bin/packages/mipsel_24kc/base" ]; then
+            echo "找到mipsel_24kc架构的包"
+            mkdir -p ../output
+            cp bin/packages/mipsel_24kc/base/luci-theme-argon* ../output/ 2>/dev/null || echo "复制argon包失败"
+            cp bin/packages/mipsel_24kc/base/luci-lib-base* ../output/ 2>/dev/null || echo "复制依赖包失败"
+          else
+            echo "=== 尝试查找其他架构 ==="
+            find bin/packages/ -name "luci-theme-argon*.ipk" -type f | head -10
+            # 尝试复制任何找到的argon包
+            mkdir -p ../output
+            find bin/packages/ -name "luci-theme-argon*.ipk" -exec cp {} ../output/ \; 2>/dev/null || echo "复制失败"
+          fi
+          
+          echo "=== 输出文件列表 ==="
+          ls -la ../output/ 2>/dev/null || echo "输出目录为空"
+          
+          # 设置状态和路径
+          if [ $(ls ../output/*.ipk 2>/dev/null | wc -l) -gt 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "FIRMWARE=$PWD/../output" >> $GITHUB_ENV
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "FIRMWARE=$PWD/../output" >> $GITHUB_ENV
+          fi
 
-      - name: Upload Argon (master) ipks to release
-        uses: softprops/action-gh-release@v1
+      - name: Debug - Check build results
+        if: always()
+        run: |
+          echo "=== 最终检查 ==="
+          ls -la ${{ env.FIRMWARE }}/*.ipk 2>/dev/null || echo "没有找到ipk文件"
+          find sdk/bin -name "*.ipk" -type f 2>/dev/null | head -10 || echo "SDK内未找到ipk文件"
+
+      - name: Upload Argon ipks to release
         if: steps.compile.outputs.status == 'success'
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{needs.job_check.outputs.argon_version}}
-          files: ${{ env.FIRMWARE }}/base/luci-theme*.*
+          files: ${{ env.FIRMWARE }}/*.ipk
+
+      - name: Upload build logs on failure
+        if: steps.compile.outputs.status == 'failed'
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-logs
+          path: |
+            sdk/build.log
+            sdk/tmp/
+          retention-days: 1
