@@ -85,12 +85,12 @@ jobs:
         uses: actions/cache@v3
         with:
           path: sdk
-          key: openwrt-sdk-snapshot-x86-64
+          key: openwrt-sdk-24.10.3-ramips-mt7620
 
       - name: Initialization environment
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         env:
-          url_sdk: https://downloads.openwrt.org/releases/24.10.3/targets/ramips/mt7620/openwrt-24.10.3-ramips-mt7620-phicomm_k2-v22.4-squashfs-sysupgrade.bin
+          url_sdk: https://downloads.openwrt.org/releases/24.10.3/targets/ramips/mt7620/openwrt-sdk-24.10.3-ramips-mt7620_gcc-13.3.0_musl.Linux-x86_64.tar.xz
         run: |
           wget ${{ env.url_sdk }}
           file_name=$(echo ${{env.url_sdk}} | awk -F/ '{print $NF}')
@@ -124,7 +124,8 @@ jobs:
           cd sdk
           echo "make package/luci-theme-argon/{clean,compile} -j$(nproc)"
           make package/luci-theme-argon/{clean,compile} -j$(nproc)
-          mv bin/packages/x86_64/base/ ../
+          # 修正为 ramips/mt7620 的包路径
+          mv bin/packages/mipsel_24kc/base/ ../
           rm .config .config.old
           cd ..
           echo "status=success" >> $GITHUB_OUTPUT
