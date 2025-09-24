@@ -85,37 +85,48 @@ jobs:
         uses: actions/cache@v3
         with:
           path: sdk
+          # 修改缓存键为 ramips/mt7620 架构
           key: openwrt-sdk-24.10.3-ramips-mt7620
 
       - name: Initialization environment
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         env:
+          # 修改为正确的 SDK 下载链接
           url_sdk: https://downloads.openwrt.org/releases/24.10.3/targets/ramips/mt7620/openwrt-sdk-24.10.3-ramips-mt7620_gcc-13.3.0_musl.Linux-x86_64.tar.zst
         run: |
           wget ${{ env.url_sdk }}
           file_name=$(echo ${{env.url_sdk}} | awk -F/ '{print $NF}')
           mkdir sdk && tar --zstd -xvf $file_name -C ./sdk --strip-components=1
           cd sdk  
-          echo "src-git base https://github.com/openwrt/openwrt.git;main" > feeds.conf
-          echo "src-git-full packages https://github.com/openwrt/packages.git;master" >> feeds.conf
-          echo "src-git-full luci https://github.com/openwrt/luci.git;master" >> feeds.conf
-          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;master"  >> feeds.conf
-          git clone -b master https://github.com/${{ github.repository }}.git package/downloads/luci-theme-argon
+          # 修改 feeds 为对应版本
+          echo "src-git base https://github.com/openwrt/openwrt.git;v24.10.3" > feeds.conf
+          echo "src-git-full packages https://github.com/openwrt/packages.git;v24.10.3" >> feeds.conf
+          echo "src-git-full luci https://github.com/openwrt/luci.git;v24.10.3" >> feeds.conf
+          echo "src-git-full routing https://git.openwrt.org/feed/routing.git;v24.10.3"  >> feeds.conf
+          git clone -b master https://github.com/${{ github.repository }}.git package/luci-theme-argon
           ./scripts/feeds update -a
+          # 安装所有必要的包，而不仅仅是 argon
+          ./scripts/feeds install -a
           echo "CONFIG_PACKAGE_luci-theme-argon=m" > .config
-          ./scripts/feeds install -d n luci-theme-argon
+          make defconfig
           make download -j8
 
       - name: Configure Argon (master)
         run: |
           cd sdk
+          # 确保安装依赖
           ./scripts/feeds install luci-theme-argon
-          echo "CONFIG_ALL_NONSHARED=n" > .config
-          echo "CONFIG_ALL_KMODS=n" >> .config
-          echo "CONFIG_ALL=n" >> .config
-          echo "CONFIG_AUTOREMOVE=n" >> .config
-          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
-          echo "CONFIG_PACKAGE_luci-theme-argon=m" >> .config
+          ./scripts/feeds install luci-lib-base
+          ./scripts/feeds install luci-compat
+          # 简化配置
+          cat > .config << 'EOF'
+CONFIG_TARGET_ramips=y
+CONFIG_TARGET_ramips_mt7620=y
+CONFIG_PACKAGE_luci-theme-argon=m
+CONFIG_PACKAGE_luci-lib-base=y
+CONFIG_PACKAGE_luci-compat=y
+CONFIG_LUCI_LANG_zh_Hans=y
+EOF
           make defconfig
 
       - name: Compile Argon (master)
@@ -125,23 +136,21 @@ jobs:
           echo "开始编译..."
           make package/luci-theme-argon/{clean,compile} -j$(nproc)
           
-          echo "=== 检查生成的包 ==="
-          # 查找所有可能的架构目录
-          find bin/packages -type d -name "base" 2>/dev/null | head -10
+          echo "=== 查找编译产物 ==="
+          # 创建输出目录
+          mkdir -p ../output
           
-          # 检查正确的架构路径 (ramips/mt7620 → mipsel_24kc)
+          # ramips/mt7620 架构对应的路径是 mipsel_24kc
           if [ -d "bin/packages/mipsel_24kc/base" ]; then
             echo "找到 mipsel_24kc 架构的包"
-            mkdir -p ../output
-            cp -r bin/packages/mipsel_24kc/base/* ../output/
-            echo "文件复制成功"
+            cp bin/packages/mipsel_24kc/base/luci-theme-argon* ../output/ 2>/dev/null || echo "复制 argon 包失败"
+            # 同时复制可能的依赖包
+            cp bin/packages/mipsel_24kc/base/luci-lib-base* ../output/ 2>/dev/null || echo "复制依赖包失败"
+            cp bin/packages/mipsel_24kc/base/luci-compat* ../output/ 2>/dev/null || echo "复制依赖包失败"
           else
-            echo "=== 尝试查找其他架构 ==="
-            # 列出所有可能的包目录
-            find bin/packages -name "luci-theme-argon*.ipk" -type f 2>/dev/null | head -10
-            # 复制任何找到的argon包
-            mkdir -p ../output
-            find bin/packages -name "luci-theme-argon*.ipk" -exec cp {} ../output/ \; 2>/dev/null || true
+            echo "=== 尝试其他路径 ==="
+            # 如果标准路径不存在，搜索所有可能的路径
+            find bin -name "luci-theme-argon*.ipk" -exec cp {} ../output/ \; 2>/dev/null || true
           fi
           
           echo "=== 输出目录内容 ==="
@@ -152,16 +161,34 @@ jobs:
             echo "status=success" >> $GITHUB_OUTPUT
             echo "FIRMWARE=$PWD/../output" >> $GITHUB_ENV
           else
-            echo "编译成功但未找到ipk文件，检查路径..."
-            find . -name "*.ipk" -type f | head -10
             echo "status=failed" >> $GITHUB_OUTPUT
+            echo "错误：未找到编译产物"
+            find . -name "*.ipk" -type f | head -10
           fi
 
-      - name: Upload Argon (master) ipks to release
-        uses: softprops/action-gh-release@v1
+      - name: Debug - Check build results
+        if: always()
+        run: |
+          echo "=== 最终检查 ==="
+          find sdk/bin -name "*.ipk" -type f 2>/dev/null | head -10 || echo "未找到ipk文件"
+          echo "=== 目录结构 ==="
+          find sdk/bin/packages -type d 2>/dev/null | head -10
+
+      - name: Upload Argon ipks to release
         if: steps.compile.outputs.status == 'success'
+        uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{needs.job_check.outputs.argon_version}}
-          files: ${{ env.FIRMWARE }}/base/luci-theme*.*
+          files: ${{ env.FIRMWARE }}/*.ipk
+
+      - name: Upload build logs on failure
+        if: steps.compile.outputs.status == 'failed'
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-logs
+          path: |
+            sdk/build.log
+            sdk/tmp/
+          retention-days: 1
